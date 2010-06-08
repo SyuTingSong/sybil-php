@@ -3,14 +3,33 @@
  * DataEntity
  * @author GuangXiN <rek@rek.me>
  * @property array $properties
- * @version 3.0 Sybil 5/31/2010
+ * @ver 2.0 Sybil 05/07/2009
+ * v2.1 06/15/2009 fixed the access control bug and the getArray bug
+ * v2.2 07/03/2009 add M/S db replication support
+ * v2.3 07/06/2009 add debug levels
+ * v2.4 07/08/2009 fixed lazyload master table bug & init pdo bug
+ * v2.5 07/09/2009 use array_key_exists instead of isset in __get
+ * v2.6 07/10/2009 implements ArrayAccess interface
+ * v2.7 07/20/2009 method add() and update() will reset modifiedProps array now.
+ * v2.8 07/29/2009 method exec() added. initMasterPDO() & initSlavePDO() change to protected.
+ * v2.9 07/29/2009 method staticGet & staticSet use CFG[Sybil][staticCache][Class::$varName] to cache static variables. Moved __cvt_enum properties into propSpec
+ * v2.10 08/11/2009 method add() has no longer use NULL as default value of `id`.
+ * v2.11 09/16/2009 add a method getConvertEnum to get the auto convert enum from outside
+ * v2.12 09/27/2009 add a new method getSingle.
+ * v2.13 10/22/2009 add __sleep method, DataEntity will only serialize for properties
+ * v2.14 11/02/2009 bugfixed: DataFilter never works in count method. bugfixed: SQL missing COUNT function
+ * v2.15 11/11/2009 add toReadArray method to convert all properties and getters to array
+ * v2.16 11/16/2009 remove all the UPDATE ... LIMIT ... query
+ * @version 2.16 Sybil 11/16/2009
  */
 class DataEntity implements ArrayAccess {
 	protected static $propSpec = array();
+	protected static $access = array(
+		'id' => DataEntity::PROP_READ,
+		'__DEFAULT__'=>DataEntity::PROP_BOTH,
+	);
 	protected $modifiedProps = array();
 	protected $properties = array('id'=>0);
-	protected $staticName = null;
-
 	public $realTime = false;
 	public $debugMode = DataEntity::OFF;
 
@@ -24,26 +43,32 @@ class DataEntity implements ArrayAccess {
 	const PROPERTY = 0x8;
 	const ALL      = 0xF;
 
-	public function __construct() {
+	public function staticGet($varName) {
 		global $CFG;
-		// init static cache
-		$staticName = get_class($this);
-		eval('$propSpec = &'.$staticName.'::$propSpec;');
-		$CFG['Sybil']['staticCache'][$staticName]['propSpec'] = &$propSpec;
-		
-		$methods = get_class_methods($this);
-		$methodExist = array_combine($methods, array_fill(0, count($methods), true));
-		$CFG['Sybil']['staticCache'][$staticName]['methodExist'] = &$methodExist;
+		$vName = get_class($this).'::$'.$varName;
+		$code = 'if(isset('.$vName.'))$result = '.$vName.'; else $result = null;';
+		eval($code);
+		$CFG['Sybil']['staticCache'][$vName] = $result;
+		return $result;
+	}
+	public function staticSet($varName, $value) {
+		$vName = get_class($this).'::$'.$varName;
+		$code = $vName.' = $value;';
+		eval($code);
+		$CFG['Sybil']['staticCache'][$vName] = $value;
+	}
 
-		$this->staticName = &$staticName;
-		/// End static cache
-
+	public function __construct() {
 		if(isset($this->properties['datetime']) && $this->properties['datetime'] == 0)
 			$this->properties['datetime'] = time();
 	}
 	public function createFromSqlResult($result) {
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		$this->properties = array();
 		if(empty($result))
 			throw new ArgumentException('$result');
@@ -61,6 +86,12 @@ class DataEntity implements ArrayAccess {
 			}
 		}
 	}
+	/**
+	 * Properties accessibility consts
+	 */
+	const PROP_READ  = 0x1;
+	const PROP_WRITE = 0x2;
+	const PROP_BOTH  = 0x3;
 
 	public function __get_properties() {
 		return $this->properties;
@@ -68,88 +99,135 @@ class DataEntity implements ArrayAccess {
 	public function isModified($name) {
 		return isset($this->properties[$name])&&$this->modifiedProps[$name];
 	}
-
+	/**
+	 * Get the auto convert enum
+	 * @param string $name
+	 * @return array
+	 */
+	public function getConvertEnum($name) {
+		global $CFG;
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		return $CFG['Sybil']['staticCache'][$propSpecKey]['convertEnum'][$name];
+	}
 	public function __get($name) {
 		global $CFG;
-		$getter = '__get_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$getter]) {
+		if(method_exists($this, '__get_'.$name)) {
 			if(($this->debugMode&DataEntity::PROPERTY)>0) {
-				echo "Calling getter for {$name}\n";
+				echo "Calling getter for $name\n";
 			}
-			return call_user_method($getter, $this);
+			return call_user_method('__get_'.$name, $this);
 		} else {
-			if(array_key_exists($name, $this->properties)) {
-				if(($this->debugMode&DataEntity::PROPERTY)>0) {
-					echo "$name hit! internal value is {$this->properties[$name]}\n";
-				}
-				$internalValue = &$this->properties[$name];
-				//Inline method autoConvert
-				$cvtEnum = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'][$name];
-				if(is_array($cvtEnum)) {
-					if(isset($cvtEnum[$internalValue])) {
-						$autoConvertResult = $cvtEnum[$internalValue];
-					} else {
-						$autoConvertResult = $cvtEnum[0];
-					}
-				} else {
-					$autoConvertResult = $internalValue;
-				}
-				//End autoConvert
-				return $autoConvertResult;
+			// Inline method access()
+			$accessibilityKey = get_class($this).'::$access';
+			if(!isset($CFG['Sybil']['staticCache'][$accessibilityKey])) {
+				$this->staticGet('access');
+			}
+			$accessibility = &$CFG['Sybil']['staticCache'][$accessibilityKey];
+			if(array_key_exists($name, $accessibility)) {
+				$access = $accessibility[$name];
 			} else {
-				if(($this->debugMode&DataEntity::PROPERTY)>0) {
-					echo "$name missed! Tring lazyload\n";
+				$access = $accessibility['__DEFAULT__'];
+			}
+			// End access
+			if(($access&DataEntity::PROP_READ)>0){
+				if(array_key_exists($name, $this->properties)) {
+					if(($this->debugMode&DataEntity::PROPERTY)>0) {
+						echo "$name hit! internal value is {$this->properties[$name]}\n";
+					}
+					//Inline method autoConvert
+					$propSpecKey = get_class($this).'::$propSpec';
+					if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+						$this->staticGet('propSpec');
+					}
+					$cvtEnum = &$CFG['Sybil']['staticCache'][$propSpecKey]['convertEnum'][$name];
+					if(is_array($cvtEnum)) {
+						if(array_key_exists($this->properties[$name], $cvtEnum)) {
+							$autoConvertResult = $cvtEnum[$this->properties[$name]];
+						} else {
+							$autoConvertResult = $cvtEnum[0];
+						}
+					} else {
+						$autoConvertResult = $this->properties[$name];
+					}
+					//End autoConvert
+					return $autoConvertResult;
+				} else {
+					if(($this->debugMode&DataEntity::PROPERTY)>0) {
+						echo "$name missed! Tring lazyload\n";
+					}
+					return $this->lazyLoad($name);
 				}
-				return $this->lazyLoad($name);
+			} else {
+				throw new PermissionDeniedException();
 			}
 		}
 	}
 	public function __set($name, $value) {
 		global $CFG;
-		$setter = '__set_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$setter]) {
+		if(method_exists($this, '__set_'.$name)) {
 			if(($this->debugMode&DataEntity::PROPERTY)>0) {
 				echo "Calling setter for $name\n";
 			}
-			call_user_method($setter, $this, $value);
+			call_user_method('__set_'.$name, $this, $value);
 		} else {
-			//Inline method autoConvert()
-			$cvtEnum = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'][$name];
-			if(is_array($cvtEnum)) {
-				if(is_int($value) || ctype_digit($value)) {
-					if(array_key_exists($value, $cvtEnum)) {
-						$autoConvertResult = $value;
+			// Inline method access()
+			$accessibilityKey = get_class($this).'::$access';
+			if(!isset($CFG['Sybil']['staticCache'][$accessibilityKey])) {
+				$this->staticGet('access');
+			}
+			$accessibility = &$CFG['Sybil']['staticCache'][$accessibilityKey];
+			if(array_key_exists($name, $accessibility)) {
+				$access = $accessibility[$name];
+			} else {
+				$access = $accessibility['__DEFAULT__'];
+			}
+			// End access
+			if(($access&DataEntity::PROP_WRITE)>0) {
+				//Inline method autoConvert()
+				$propSpecKey = get_class($this).'::$propSpec';
+				if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+					$this->staticGet('propSpec');
+				}
+				$cvtEnum = &$CFG['Sybil']['staticCache'][$propSpecKey]['convertEnum'][$name];
+				if(is_array($cvtEnum)) {
+					if(is_int($value) || ctype_digit($value)) {
+						if(array_key_exists($value, $cvtEnum)) {
+							$autoConvertResult = $value;
+						} else {
+							$autoConvertResult = 0;
+						}
 					} else {
-						$autoConvertResult = 0;
+						if(($i = array_search($value, $cvtEnum)) === false) {
+							$autoConvertResult = 0;
+						} else {
+							$autoConvertResult = $i;
+						}
 					}
 				} else {
-					if(($i = array_search($value, $cvtEnum)) === false) {
-						$autoConvertResult = 0;
-					} else {
-						$autoConvertResult = $i;
+					$autoConvertResult = $value;
+				}
+				//End autoConvert
+				$value = $autoConvertResult;
+				if(($this->debugMode&DataEntity::PROPERTY)>0) {
+					echo "Internal value of $name is $value\n";
+				}
+				if($value !== $this->properties[$name]) {
+					$this->properties[$name] = $value;
+					$this->modifiedProps[$name] = true;
+					if(($this->debugMode&DataEntity::PROPERTY)>0) {
+						echo "New value of $name saved\n";
 					}
 				}
 			} else {
-				$autoConvertResult = $value;
-			}
-			//End autoConvert
-			$value = $autoConvertResult;
-			if(($this->debugMode&DataEntity::PROPERTY)>0) {
-				echo "Internal value of $name is $value\n";
-			}
-			if($value !== $this->properties[$name]) {
-				$this->properties[$name] = $value;
-				$this->modifiedProps[$name] = true;
-				if(($this->debugMode&DataEntity::PROPERTY)>0) {
-					echo "New value of $name saved\n";
-				}
+				throw new PermissionDeniedException();
 			}
 		}
 	}
 	public function __toString() {
-		return $this->staticName.'-'.$this->properties['id'];
+		return get_class($this).'-'.$this->id;
 	}
 
 	/**
@@ -158,7 +236,11 @@ class DataEntity implements ArrayAccess {
 	 */
 	protected function initMasterPDO($slave=false) {
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		if($slave && (isset($propSpec['master']['sPDO']) || isset($CFG['Sybil']['sPDO']['dsn']))) { //丛库读取模式
 			$rand = mt_rand();
 			if(isset($propSpec['master']['sPDO']['dsn'])) {
@@ -184,6 +266,7 @@ class DataEntity implements ArrayAccess {
 			else {
 				$pdo = new PDO($dsn, $user, $password, array(PDO::MYSQL_ATTR_INIT_COMMAND => $init));
 				$propSpec['master']['sPDO'][$sPDONum]['pdo'] = $pdo;
+				$this->staticSet('propSpec', $propSpec);
 			}
 		} else { //实时主库读取模式
 			if($propSpec['master']['PDO']['pdo'] instanceof PDO) {
@@ -206,12 +289,17 @@ class DataEntity implements ArrayAccess {
 			$pdo = new PDO($dsn, $user, $password, array(
 						   PDO::MYSQL_ATTR_INIT_COMMAND => $init));
 			$propSpec['master']['PDO']['pdo'] = $pdo;
+			$this->staticSet('propSpec', $propSpec);
 		}
 		return $pdo;
 	}
 	protected function initSlavePDO($tableName) {
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		if(!$this->realTime && isset($propSpec['slave'][$tableName]['sPDO']['dsn'])) {
 			$rand = mt_rand();
 			$sPDOCount = count($propSpec['slave'][$tableName]['sPDO']);
@@ -227,6 +315,7 @@ class DataEntity implements ArrayAccess {
 			}
 			$pdo = new PDO($dsn, $user, $password, array(PDO::MYSQL_ATTR_INIT_COMMAND => $init));
 			$propSpec['slave'][$tableName]['sPDO'][$sPDONum]['pdo'] = $pdo;
+			$this->staticSet('propSpec', $propSpec);
 		} else {
 			if($propSpec['slave'][$tableName]['PDO']['pdo'] instanceof PDO) {
 				return $propSpec['slave'][$tableName]['PDO']['pdo'];
@@ -244,8 +333,22 @@ class DataEntity implements ArrayAccess {
 				$pdo = $this->initMasterPDO(!$this->realTime);
 			}
 			$propSpec['slave'][$tableName]['PDO']['pdo'] = $pdo;
+			$this->staticSet('propSpec', $propSpec);
 		}
 		return $pdo;
+	}
+	private function access($name) {
+		global $CFG;
+		$accessibilityKey = get_class($this).'::$access';
+		if(!isset($CFG['Sybil']['staticCache'][$accessibilityKey])) {
+			$this->staticGet('access');
+		}
+		$accessibility = &$CFG['Sybil']['staticCache'][$accessibilityKey];
+		if(array_key_exists($name, $accessibility)) {
+			return $accessibility[$name];
+		} else {
+			return $accessibility['__DEFAULT__'];
+		}
 	}
 	/**
 	 * autoConvert
@@ -255,8 +358,12 @@ class DataEntity implements ArrayAccess {
 	 */
 	private function autoConvert($name) {
 		global $CFG;
-		$cvtEnum = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'][$name];
 		if(func_num_args() == 1) {
+			$propSpecKey = get_class($this).'::$propSpec';
+			if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+				$this->staticGet('propSpec');
+			}
+			$cvtEnum = &$CFG['Sybil']['staticCache'][$propSpecKey]['convertEnum'][$name];
 			if(is_array($cvtEnum)) {
 				if(array_key_exists($this->properties[$name], $cvtEnum)) {
 					return $cvtEnum[$this->properties[$name]];
@@ -268,6 +375,11 @@ class DataEntity implements ArrayAccess {
 			}
 		} else if(func_num_args() == 2) {
 			$value = func_get_arg(1);
+			$propSpecKey = get_class($this).'::$propSpec';
+			if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+				$this->staticGet('propSpec');
+			}
+			$cvtEnum = &$CFG['Sybil']['staticCache'][$propSpecKey]['convertEnum'][$name];
 			if(is_array($cvtEnum)) {
 				if(is_int($value) || ctype_digit($value)) {
 					if(array_key_exists($value, $cvtEnum)) {
@@ -290,7 +402,15 @@ class DataEntity implements ArrayAccess {
 	private function lazyLoad($name) {
 		if(intval($this->properties['id']) != 0) {
 			global $CFG;
-			$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+			$propSpecKey = get_class($this).'::$propSpec';
+			if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+				$this->staticGet('propSpec');
+			}
+			$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
+			//if(array_key_exists($name, $propSpec['master']['columns'])) {
+			//	$this->lazyLoadTable($propSpec['master']['tableName']);
+			//	return $this->autoConvert($name);
+			//}
 			if(!isset($propSpec['slave'])) return;
 			foreach($propSpec['slave'] as $slaveTable) {
 				if(array_key_exists($name, $slaveTable['columns'])) {
@@ -306,7 +426,11 @@ class DataEntity implements ArrayAccess {
 			echo "Lazyload table $tableName\n";
 		}
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		$pdo = $this->initSlavePDO($tableName);
 		$pr = $pdo->query("SELECT * FROM `$tableName` WHERE `id`={$this->id} LIMIT 1");
 		$r = $pr->fetch(PDO::FETCH_ASSOC);
@@ -328,7 +452,11 @@ class DataEntity implements ArrayAccess {
 			throw new PermissionDeniedException('The object has already persisted to database');
 		}
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 
 		// create master record SQL
 		$columns='';
@@ -416,7 +544,11 @@ class DataEntity implements ArrayAccess {
 			throw new PermissionDeniedException('Cannot update an object without id');
 		}
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		//update master table
 		$columns = '';
 		$first = true;
@@ -497,7 +629,11 @@ class DataEntity implements ArrayAccess {
 	 */
 	public function getSingle($uniqueKey, $keyValue, $realTime=false) {
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		$pdo = $this->initMasterPDO(!$realTime);
 		$this->realTime = $realTime;
 		$sql = "SELECT * FROM `{$propSpec['master']['tableName']}` WHERE `{$uniqueKey}`='{$keyValue}' LIMIT 1;";
@@ -543,7 +679,11 @@ class DataEntity implements ArrayAccess {
 	public function getArray($arg=null, $realTime=false) {
 		if($arg instanceof DataFilter || is_null($arg)) {
 			global $CFG;
-			$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+			$propSpecKey = get_class($this).'::$propSpec';
+			if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+				$this->staticGet('propSpec');
+			}
+			$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 
 			$condition = $arg instanceof DataFilter? $arg->getSQL():'';
 			if(is_string($propSpec['searchView'])) {
@@ -593,7 +733,11 @@ class DataEntity implements ArrayAccess {
 			throw new ArgumentException('$id');
 		}
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		if($justMark) {
 			$sql = "UPDATE `{$propSpec['master']['tableName']}` SET `deleted`='1' WHERE `id`='{$id}';";
 		} else {
@@ -623,7 +767,11 @@ class DataEntity implements ArrayAccess {
 	}
 	public function count($arg=null, $realTime=false) {
 		global $CFG;
-		$propSpec = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec'];
+		$propSpecKey = get_class($this).'::$propSpec';
+		if(!isset($CFG['Sybil']['staticCache'][$propSpecKey])) {
+			$this->staticGet('propSpec');
+		}
+		$propSpec = &$CFG['Sybil']['staticCache'][$propSpecKey];
 		if($arg instanceof DataFilter) {
 			if(is_string($propSpec['searchView'])) {
 				$sql = "SELECT COUNT(*) FROM `{$propSpec['searchView']}` WHERE `deleted`='0' ".$arg->getSQL();
@@ -686,88 +834,11 @@ class DataEntity implements ArrayAccess {
 	public function offsetExists($offset) {
 		return method_exists($this, '__get_'.$offset) || array_key_exists($offset, $this->properties);
 	}
-	public function offsetGet ($name) {
-		//inline method __get()
-		global $CFG;
-		$getter = '__get_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$getter]) {
-			if(($this->debugMode&DataEntity::PROPERTY)>0) {
-				echo "Calling getter for {$name}\n";
-			}
-			return call_user_method($getter, $this);
-		} else {
-			if(array_key_exists($name, $this->properties)) {
-				if(($this->debugMode&DataEntity::PROPERTY)>0) {
-					echo "$name hit! internal value is {$this->properties[$name]}\n";
-				}
-				$internalValue = &$this->properties[$name];
-				//Inline method autoConvert
-				$cvtEnum = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'][$name];
-				if(is_array($cvtEnum)) {
-					if(isset($cvtEnum[$internalValue])) {
-						$autoConvertResult = $cvtEnum[$internalValue];
-					} else {
-						$autoConvertResult = $cvtEnum[0];
-					}
-				} else {
-					$autoConvertResult = $internalValue;
-				}
-				//End autoConvert
-				return $autoConvertResult;
-			} else {
-				if(($this->debugMode&DataEntity::PROPERTY)>0) {
-					echo "$name missed! Tring lazyload\n";
-				}
-				return $this->lazyLoad($name);
-			}
-		}
-		/// end of __get
+	public function offsetGet ($offset) {
+		return $this->__get($offset);
 	}
-	public function offsetSet($name, $value){
-		// inline method __set()
-		global $CFG;
-		$setter = '__set_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$setter]) {
-			if(($this->debugMode&DataEntity::PROPERTY)>0) {
-				echo "Calling setter for $name\n";
-			}
-			call_user_method($setter, $this, $value);
-		} else {
-			//Inline method autoConvert()
-			$cvtEnum = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'][$name];
-			if(is_array($cvtEnum)) {
-				if(is_int($value) || ctype_digit($value)) {
-					if(array_key_exists($value, $cvtEnum)) {
-						$autoConvertResult = $value;
-					} else {
-						$autoConvertResult = 0;
-					}
-				} else {
-					if(($i = array_search($value, $cvtEnum)) === false) {
-						$autoConvertResult = 0;
-					} else {
-						$autoConvertResult = $i;
-					}
-				}
-			} else {
-				$autoConvertResult = $value;
-			}
-			//End autoConvert
-			$value = $autoConvertResult;
-			if(($this->debugMode&DataEntity::PROPERTY)>0) {
-				echo "Internal value of $name is $value\n";
-			}
-			if($value !== $this->properties[$name]) {
-				$this->properties[$name] = $value;
-				$this->modifiedProps[$name] = true;
-				if(($this->debugMode&DataEntity::PROPERTY)>0) {
-					echo "New value of $name saved\n";
-				}
-			}
-		}
-		///end of __set
+	public function offsetSet($offset, $value){
+		return $this->__set($offset, $value);
 	}
 	public function offsetUnset($offset) {
 		if(method_exists($this, '__get_'.$offset)||method_exists($this, '__set_'.$offset)) {

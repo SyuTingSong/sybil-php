@@ -2,10 +2,10 @@
 /**
  * TCache class
  * TCache is a MCache implement without 1MB object cut, use for Tokyo
- * @version 3.0 05/31/2010
+ * @version 0.1 07/10/2009
  * @author GuangXiN <rek@rek.me>
  */
-class TCache extends KeyValueCache {
+class TCache implements IDictCache {
 	private $mc = null;
 	private $defTimeout = null;
 	public function __construct($servers = null) {

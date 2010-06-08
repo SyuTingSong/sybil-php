@@ -1,11 +1,6 @@
 <?php
-/**
- * ACache class
- * for Alternative PHP Cache
- * @version 3.0 05/31/2010
- * @author GuangXiN <rek@rek.me>
- */
-class ACache extends KeyValueCache {
+// for Alternative PHP Cache
+class ACache implements IDictCache {
 	function get($key, $callback=null, $state=null, $timeout=null) {
 		$result = unserialize(apc_fetch($key, $success));
 		if($success) {

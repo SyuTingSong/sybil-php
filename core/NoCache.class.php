@@ -4,7 +4,7 @@
  * @version 0.1 05/27/2009
  * @author GuangXiN <rek@rek.me>
 */
-class NoCache extends KeyValueCache {
+class NoCache implements IDictCache {
 	function get($key, $callback=null, $state=null, $timeout=null) {
 		if(!is_null($callback))
 			return call_user_func_array($callback, $state);
