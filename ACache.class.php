@@ -4,6 +4,7 @@
  * for Alternative PHP Cache
  * @version 3.0 05/31/2010
  * @author GuangXiN <rek@rek.me>
+ * @version 3.5 11/18/2010 add array scope for callback $state
  */
 class ACache extends KeyValueCache {
 	function get($key, $callback=null, $state=null, $timeout=null) {
@@ -11,7 +12,7 @@ class ACache extends KeyValueCache {
 		if($success) {
 			return $result;
 		} else {
-			$result = call_user_func_array($callback, $state);
+			$result = call_user_func_array($callback, array($state));
 			apc_store($key, serialize($result), $timeout);
 			return $result;
 		}
