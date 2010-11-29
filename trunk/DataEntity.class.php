@@ -3,7 +3,13 @@
  * DataEntity
  * @author GuangXiN <rek@rek.me>
  * @property array $properties
- * @version 3.0 Sybil 5/31/2010
+ * @ver 3.0 Sybil 5/31/2010
+ * @ver 3.1 Sybil 6/14/2010 add getter for convert enum
+ * @version 3.2 Sybil 6/14/2010 Adds error code for all PDOException throwing
+ * @version 3.3 Sybil 9/2/2010 Constructor allowed 1 parameter $id, call getById auto
+ * @version 3.4 Sybil 9/2/2010 method count will always return integer now
+ * @version 3.4.1 Sybil 09/27/2010 remove methodExist cache for PHP5.2.4
+ * @version 3.5 Sybil 11/17/2010 removed deprecated 'call_user_method'
  */
 class DataEntity implements ArrayAccess {
 	protected static $propSpec = array();
@@ -24,19 +30,19 @@ class DataEntity implements ArrayAccess {
 	const PROPERTY = 0x8;
 	const ALL      = 0xF;
 
-	public function __construct() {
+	public function __construct($id=0) {
 		global $CFG;
 		// init static cache
 		$staticName = get_class($this);
 		eval('$propSpec = &'.$staticName.'::$propSpec;');
 		$CFG['Sybil']['staticCache'][$staticName]['propSpec'] = &$propSpec;
-		
-		$methods = get_class_methods($this);
-		$methodExist = array_combine($methods, array_fill(0, count($methods), true));
-		$CFG['Sybil']['staticCache'][$staticName]['methodExist'] = &$methodExist;
 
 		$this->staticName = &$staticName;
 		/// End static cache
+		$id = intval($id);
+		if($id > 0) {
+			$this->getById($id);
+		}
 
 		if(isset($this->properties['datetime']) && $this->properties['datetime'] == 0)
 			$this->properties['datetime'] = time();
@@ -72,12 +78,11 @@ class DataEntity implements ArrayAccess {
 	public function __get($name) {
 		global $CFG;
 		$getter = '__get_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$getter]) {
+		if(method_exists($this, $getter)) {
 			if(($this->debugMode&DataEntity::PROPERTY)>0) {
 				echo "Calling getter for {$name}\n";
 			}
-			return call_user_method($getter, $this);
+			return $this->$getter();
 		} else {
 			if(array_key_exists($name, $this->properties)) {
 				if(($this->debugMode&DataEntity::PROPERTY)>0) {
@@ -108,12 +113,11 @@ class DataEntity implements ArrayAccess {
 	public function __set($name, $value) {
 		global $CFG;
 		$setter = '__set_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$setter]) {
+		if(method_exists($this, $setter)) {
 			if(($this->debugMode&DataEntity::PROPERTY)>0) {
 				echo "Calling setter for $name\n";
 			}
-			call_user_method($setter, $this, $value);
+			$this->$setter($value);
 		} else {
 			//Inline method autoConvert()
 			$cvtEnum = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'][$name];
@@ -402,7 +406,7 @@ class DataEntity implements ArrayAccess {
 					var_dump($pdo->errorInfo());
 				}
 				$info = $pdo->errorInfo();
-				throw new PDOException($info[2]);
+				throw new PDOException($info[2], $info[1]);
 			}
 		}
 		$this->modifiedProps = array();
@@ -447,7 +451,7 @@ class DataEntity implements ArrayAccess {
 					var_dump($pdo->errorInfo());
 				}
 				$info = $pdo->errorInfo();
-				throw new PDOException($info[2]);
+				throw new PDOException($info[2], $info[1]);
 			}
 		}
 		// update slave tables
@@ -482,7 +486,7 @@ class DataEntity implements ArrayAccess {
 						var_dump($pdo->errorInfo());
 					}
 					$info = $pdo->errorInfo();
-					throw new PDOException($info[2]);
+					throw new PDOException($info[2], $info[1]);
 				}
 			}
 		}
@@ -511,7 +515,7 @@ class DataEntity implements ArrayAccess {
 				var_dump($pdo->errorInfo());
 			}
 			$info = $pdo->errorInfo();
-			throw new PDOException($info[2]);
+			throw new PDOException($info[2], $info[1]);
 		}
 		$result = $pr->fetch(PDO::FETCH_ASSOC);
 		if(!empty($result)) {
@@ -580,7 +584,7 @@ class DataEntity implements ArrayAccess {
 				var_dump($pdo->errorInfo());
 			}
 			$info = $pdo->errorInfo();
-			throw new PDOException($info[2]);
+			throw new PDOException($info[2], $info[1]);
 		}
 	}
 	/**
@@ -618,7 +622,7 @@ class DataEntity implements ArrayAccess {
 				var_dump($pdo->errorInfo());
 			}
 			$info = $pdo->errorInfo();
-			throw new PDOException($info[2]);
+			throw new PDOException($info[2], $info[1]);
 		}
 	}
 	public function count($arg=null, $realTime=false) {
@@ -642,14 +646,14 @@ class DataEntity implements ArrayAccess {
 		$pr = $pdo->query($sql);
 		if($pr !== false) {
 			$r = $pr->fetch(PDO::FETCH_NUM);
-			return $r[0];
+			return intval($r[0]);
 		} else {
 			if(($this->debugMode&DataEntity::ERROR)>0) {
 				var_dump($pdo->errorCode());
 				var_dump($pdo->errorInfo());
 			}
 			$info = $pdo->errorInfo();
-			throw new PDOException($info[2]);
+			throw new PDOException($info[2], $info[1]);
 		}
 	}
 	/**
@@ -676,7 +680,7 @@ class DataEntity implements ArrayAccess {
 				var_dump($pdo->errorInfo());
 			}
 			$info = $pdo->errorInfo();
-			throw new PDOException($info[2]);
+			throw new PDOException($info[2], $info[1]);
 		}
 		return $result;
 	}
@@ -690,12 +694,11 @@ class DataEntity implements ArrayAccess {
 		//inline method __get()
 		global $CFG;
 		$getter = '__get_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$getter]) {
+		if(method_exists($this, $getter)) {
 			if(($this->debugMode&DataEntity::PROPERTY)>0) {
 				echo "Calling getter for {$name}\n";
 			}
-			return call_user_method($getter, $this);
+			return $this->$getter();
 		} else {
 			if(array_key_exists($name, $this->properties)) {
 				if(($this->debugMode&DataEntity::PROPERTY)>0) {
@@ -728,12 +731,11 @@ class DataEntity implements ArrayAccess {
 		// inline method __set()
 		global $CFG;
 		$setter = '__set_'.$name;
-		$methodExist = &$CFG['Sybil']['staticCache'][$this->staticName]['methodExist'];
-		if($methodExist[$setter]) {
+		if(method_exists($this, $setter)) {
 			if(($this->debugMode&DataEntity::PROPERTY)>0) {
 				echo "Calling setter for $name\n";
 			}
-			call_user_method($setter, $this, $value);
+			$this->$setter($value);
 		} else {
 			//Inline method autoConvert()
 			$cvtEnum = &$CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'][$name];
@@ -787,6 +789,10 @@ class DataEntity implements ArrayAccess {
 			}
 		}
 		return array_merge($getterProp, $this->properties);
+	}
+	public function __get_convertEnum() {
+		global $CFG;
+		return $CFG['Sybil']['staticCache'][$this->staticName]['propSpec']['convertEnum'];
 	}
 }
 ?>
